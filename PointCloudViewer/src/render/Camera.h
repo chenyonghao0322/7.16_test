@@ -5,6 +5,8 @@
 class Camera {
 public:
     void SetTarget(const Vec3& target, float distance);
+    // 只改旋转中心，保持距离与视角（用于双击设中心）
+    void SetOrbitTarget(const Vec3& target);
     void Orbit(float dx, float dy);
     void Pan(float dx, float dy, float sensitivity = 1.f);
     void Zoom(float delta);

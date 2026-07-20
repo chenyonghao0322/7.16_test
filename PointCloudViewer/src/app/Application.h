@@ -85,13 +85,18 @@ private:
     void UpdateAxesLength();
     void UpdateView3dLayout(float contentTop, float contentH, float sidebarW);
     bool MouseInView3d(double mx, double my) const;
+    // 点云视区在 framebuffer 中的矩形（原点左上，与鼠标 FB 坐标一致）
+    void GetView3dFbRect(int& x, int& y, int& w, int& h) const;
+    // OpenGL viewport（原点左下）
+    void GetView3dGlViewport(int& x, int& y, int& w, int& h) const;
+    float View3dAspect() const;
     bool HasImagePanel() const;
     float ImagePanelWidth() const;
     bool TryEnableImageSync();
     void ClearImageSyncPick();
     void SetImageSyncPixel(int col, int row);
     void RebuildDepthDisplay();
-    void DrawImageWithSyncMarker(ImageView& view, const char* label, float maxH);
+    void DrawImageWithSyncMarker(ImageView& view, const char* label);
     void DrawDepthRenderControls();
     void DrawRoiRegionOverlay(ImDrawList* dl, int winW, int winH,
                               const std::vector<std::size_t>& indices, const char* label,
@@ -139,6 +144,7 @@ private:
     bool showImagePanel_ = false;
     int imagePanelTab_ = 0;  // 0 深度 1 亮度
     float imagePanelPreferredW_ = 420.f;
+    float image2dZoom_ = 1.f;
     bool saveVisibleOnly_ = true;
     bool useIntensityColors_ = false;
     std::vector<Vec3> intensityColors_;

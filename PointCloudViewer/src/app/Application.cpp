@@ -334,8 +334,9 @@ bool Application::HasImagePanel() const {
 float Application::ImagePanelWidth() const {
     if (!HasImagePanel()) return 0.f;
     const ImGuiViewport* vp = ImGui::GetMainViewport();
-    const float remain = std::max(vp->Size.x - 320.f, 200.f);
-    return std::clamp(imagePanelPreferredW_, 240.f, remain * 0.55f);
+    // 至少留给左侧栏 + 点云视区约 600px
+    const float maxW = std::max(vp->Size.x - 600.f, 240.f);
+    return std::clamp(imagePanelPreferredW_, 240.f, maxW);
 }
 
 void Application::ClearImageSyncPick() {
@@ -753,8 +754,10 @@ void Application::SyncSectionCutPlane() {
 }
 
 bool Application::ProjectWorldToScreen(const Vec3& p, float& sx, float& sy) const {
-    if (fbW_ <= 0 || fbH_ <= 0) return false;
-    const float aspect = static_cast<float>(fbW_) / static_cast<float>(fbH_);
+    int vx = 0, vy = 0, vw = 0, vh = 0;
+    GetView3dFbRect(vx, vy, vw, vh);
+    if (vw <= 0 || vh <= 0) return false;
+    const float aspect = static_cast<float>(vw) / static_cast<float>(vh);
     const Mat4 mvp = camera_.ProjMatrix(aspect) * camera_.ViewMatrix();
     const Vec4 clip = mvp.MulVec4({p.x, p.y, p.z, 1.f});
     if (std::fabs(clip.w) < 1e-12f) return false;
@@ -762,8 +765,8 @@ bool Application::ProjectWorldToScreen(const Vec3& p, float& sx, float& sy) cons
     const float ndcY = clip.y / clip.w;
     const float ndcZ = clip.z / clip.w;
     if (ndcZ < -1.f || ndcZ > 1.f) return false;
-    sx = (ndcX * 0.5f + 0.5f) * static_cast<float>(fbW_);
-    sy = (1.f - (ndcY * 0.5f + 0.5f)) * static_cast<float>(fbH_);
+    sx = static_cast<float>(vx) + (ndcX * 0.5f + 0.5f) * static_cast<float>(vw);
+    sy = static_cast<float>(vy) + (1.f - (ndcY * 0.5f + 0.5f)) * static_cast<float>(vh);
     return true;
 }
 
@@ -846,8 +849,12 @@ void Application::UpdateRoiDrag(float mouseX, float mouseY) {
 void Application::EndRoiDrag() {
     if (!measure_.roiDragging) return;
     measure_.roiDragging = false;
-    MeasureTools::SelectRoi(cloud_, camera_, fbW_, fbH_, measure_.roiX0, measure_.roiY0,
-                            measure_.roiX1, measure_.roiY1, measure_.roiIndices);
+    int vx = 0, vy = 0, vw = 0, vh = 0;
+    GetView3dFbRect(vx, vy, vw, vh);
+    MeasureTools::SelectRoi(cloud_, camera_, vw, vh, measure_.roiX0 - static_cast<float>(vx),
+                            measure_.roiY0 - static_cast<float>(vy),
+                            measure_.roiX1 - static_cast<float>(vx),
+                            measure_.roiY1 - static_cast<float>(vy), measure_.roiIndices);
 
     if (measure_.mode == ToolMode::StepGap) {
         auto& sg = measure_.stepGap;
@@ -1019,8 +1026,11 @@ void Application::OnLeftClick(float mouseX, float mouseY) {
         return;
     if (measure_.mode == ToolMode::Section) return;
 
-    const auto idx = MeasureTools::PickNearest(cloud_, camera_, fbW_, fbH_, mouseX, mouseY, 12.f,
-                                               displayIndices_.empty() ? nullptr : &displayIndices_);
+    int vx = 0, vy = 0, vw = 0, vh = 0;
+    GetView3dFbRect(vx, vy, vw, vh);
+    const auto idx = MeasureTools::PickNearest(
+        cloud_, camera_, vw, vh, mouseX - static_cast<float>(vx), mouseY - static_cast<float>(vy),
+        12.f, displayIndices_.empty() ? nullptr : &displayIndices_);
     if (!idx) {
         measure_.status = u8"光标附近没有点";
         return;
@@ -1097,6 +1107,36 @@ void Application::UpdateView3dLayout(float contentTop, float contentH, float sid
 bool Application::MouseInView3d(double mx, double my) const {
     return mx >= static_cast<double>(view3dX_) && mx < static_cast<double>(view3dX_ + view3dW_) &&
            my >= static_cast<double>(view3dY_) && my < static_cast<double>(view3dY_ + view3dH_);
+}
+
+void Application::GetView3dFbRect(int& x, int& y, int& w, int& h) const {
+    int winW = 0, winH = 0;
+    if (window_) glfwGetWindowSize(window_, &winW, &winH);
+    const float sx = (winW > 0) ? static_cast<float>(fbW_) / static_cast<float>(winW) : 1.f;
+    const float sy = (winH > 0) ? static_cast<float>(fbH_) / static_cast<float>(winH) : 1.f;
+    x = static_cast<int>(std::lround(view3dX_ * sx));
+    y = static_cast<int>(std::lround(view3dY_ * sy));
+    w = std::max(1, static_cast<int>(std::lround(view3dW_ * sx)));
+    h = std::max(1, static_cast<int>(std::lround(view3dH_ * sy)));
+    if (x < 0) x = 0;
+    if (y < 0) y = 0;
+    if (x + w > fbW_) w = std::max(1, fbW_ - x);
+    if (y + h > fbH_) h = std::max(1, fbH_ - y);
+}
+
+void Application::GetView3dGlViewport(int& x, int& y, int& w, int& h) const {
+    int fx = 0, fy = 0;
+    GetView3dFbRect(fx, fy, w, h);
+    // GLFW/FB Y 向下；OpenGL viewport Y 向上
+    x = fx;
+    y = fbH_ - fy - h;
+    if (y < 0) y = 0;
+}
+
+float Application::View3dAspect() const {
+    int x = 0, y = 0, w = 0, h = 0;
+    GetView3dFbRect(x, y, w, h);
+    return static_cast<float>(w) / static_cast<float>(std::max(h, 1));
 }
 
 void Application::DrawRoiRegionOverlay(ImDrawList* dl, int winW, int winH,
@@ -1251,6 +1291,29 @@ void Application::HandleInput() {
     const bool allowPan = inView3d && (!uiCapture || middle || (left && shift));
     const bool allow3d = inView3d && !uiCapture;
 
+    // 双击点云：将旋转中心设为最近点
+    if (allow3d && !cloud_.points.empty() && ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left) &&
+        !shift && !alt) {
+        int vx = 0, vy = 0, vw = 0, vh = 0;
+        GetView3dFbRect(vx, vy, vw, vh);
+        const auto idx = MeasureTools::PickNearest(
+            cloud_, camera_, vw, vh, mouseX - static_cast<float>(vx),
+            mouseY - static_cast<float>(vy), 14.f,
+            displayIndices_.empty() ? nullptr : &displayIndices_);
+        if (idx) {
+            camera_.SetOrbitTarget(cloud_.points[*idx]);
+            const Vec3 w = cloud_.ToWorld(cloud_.points[*idx]);
+            char buf[160];
+            std::snprintf(buf, sizeof(buf), u8"旋转中心已设为点 #%zu  (%.4f, %.4f, %.4f)", *idx, w.x,
+                          w.y, w.z);
+            measure_.status = buf;
+            rotating_ = false;
+            panning_ = false;
+        } else {
+            measure_.status = u8"双击附近没有点，无法设置旋转中心";
+        }
+    }
+
     if (allowPan) {
         const bool wantPan = middle || (left && shift);
         if (wantPan) {
@@ -1377,6 +1440,12 @@ void Application::DrawOverlays() {
     ImDrawList* dlBg = ImGui::GetBackgroundDrawList();
     ImDrawList* dl = ImGui::GetForegroundDrawList();
 
+    // 叠加标注限制在点云视区内，避免画进侧栏 / 2D 图像窗口
+    const ImVec2 clipMin(view3dX_, view3dY_);
+    const ImVec2 clipMax(view3dX_ + view3dW_, view3dY_ + view3dH_);
+    dlBg->PushClipRect(clipMin, clipMax, true);
+    dl->PushClipRect(clipMin, clipMax, true);
+
     // 框选拖拽中：屏幕矩形；完成后：3D 投影框（随视角动）
     const bool roiDraggingNow =
         measure_.roiDragging ||
@@ -1417,16 +1486,10 @@ void Application::DrawOverlays() {
     }
 
     auto project = [&](const Vec3& p, ImVec2& out) -> bool {
-        const float aspect = static_cast<float>(fbW_) / static_cast<float>(fbH_);
-        const Mat4 mvp = camera_.ProjMatrix(aspect) * camera_.ViewMatrix();
-        const Vec4 clip = mvp.MulVec4({p.x, p.y, p.z, 1.f});
-        if (std::fabs(clip.w) < 1e-12f) return false;
-        const float ndcX = clip.x / clip.w;
-        const float ndcY = clip.y / clip.w;
-        const float ndcZ = clip.z / clip.w;
-        if (ndcZ < -1.f || ndcZ > 1.f) return false;
-        out.x = (ndcX * 0.5f + 0.5f) * static_cast<float>(winW);
-        out.y = (1.f - (ndcY * 0.5f + 0.5f)) * static_cast<float>(winH);
+        float px = 0.f, py = 0.f;
+        if (!ProjectWorldToScreen(p, px, py)) return false;
+        out.x = px * sx;
+        out.y = py * sy;
         return true;
     };
 
@@ -1538,6 +1601,9 @@ void Application::DrawOverlays() {
             dl->AddText(zp, IM_COL32(100, 160, 255, 255), buf);
         }
     }
+
+    dl->PopClipRect();
+    dlBg->PopClipRect();
 }
 
 void Application::DrawStepGapPanel() {
@@ -2180,7 +2246,7 @@ void Application::DrawCreatePopups() {
     }
 }
 
-void Application::DrawImageWithSyncMarker(ImageView& view, const char* label, float maxH) {
+void Application::DrawImageWithSyncMarker(ImageView& view, const char* label) {
     if (!view.valid()) return;
 
     ImGui::TextDisabled("%s  %s  %dx%d", label, FileNameOf(view.path).c_str(), view.width,
@@ -2189,19 +2255,32 @@ void Application::DrawImageWithSyncMarker(ImageView& view, const char* label, fl
         ImGui::SameLine();
         ImGui::TextDisabled(u8"  渲染 %.3f~%.3f", view.valueMin, view.valueMax);
     }
+    ImGui::SameLine();
+    ImGui::TextDisabled(u8"  缩放 %.0f%%", image2dZoom_ * 100.f);
 
     const ImVec2 avail = ImGui::GetContentRegionAvail();
     const float imgAspect =
         (view.height > 0) ? static_cast<float>(view.width) / static_cast<float>(view.height) : 1.f;
-    float drawW = avail.x;
-    float drawH = drawW / imgAspect;
-    const float limitH = (maxH > 1.f) ? maxH : avail.y;
-    if (drawH > limitH && limitH > 8.f) {
-        drawH = limitH;
-        drawW = drawH * imgAspect;
+    float fitW = std::max(avail.x, 1.f);
+    float fitH = fitW / imgAspect;
+    if (fitH > avail.y && avail.y > 1.f) {
+        fitH = avail.y;
+        fitW = fitH * imgAspect;
     }
-    drawW = std::max(drawW, 1.f);
-    drawH = std::max(drawH, 1.f);
+    const float drawW = std::max(fitW * image2dZoom_, 1.f);
+    const float drawH = std::max(fitH * image2dZoom_, 1.f);
+
+    const ImGuiID childId = ImGui::GetID(label);
+    ImGui::BeginChild(childId, avail, ImGuiChildFlags_Borders,
+                      ImGuiWindowFlags_HorizontalScrollbar);
+    ImGuiIO& io = ImGui::GetIO();
+    if (ImGui::IsWindowHovered() && io.KeyShift && io.MouseWheel != 0.f) {
+        const float factor = 1.f + io.MouseWheel * 0.12f;
+        image2dZoom_ = std::clamp(image2dZoom_ * factor, 0.1f, 32.f);
+    }
+    if (ImGui::IsWindowHovered() && ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left)) {
+        image2dZoom_ = 1.f;
+    }
 
     const ImVec2 cursor = ImGui::GetCursorScreenPos();
     ImGui::Image((ImTextureID)(intptr_t)view.texId, ImVec2(drawW, drawH));
@@ -2251,10 +2330,12 @@ void Application::DrawImageWithSyncMarker(ImageView& view, const char* label, fl
                     }
                 }
                 if (imageSyncEnabled_) ImGui::TextDisabled(u8"单击同步到另一张图");
+                ImGui::TextDisabled(u8"Shift+滚轮缩放，双击复位");
                 ImGui::EndTooltip();
             }
         }
     }
+    ImGui::EndChild();
 }
 
 void Application::DrawDepthRenderControls() {
@@ -2303,24 +2384,70 @@ void Application::DrawDepthRenderControls() {
 void Application::DrawImagePanel() {
     if (!HasImagePanel()) return;
 
-    const float imageW = ImagePanelWidth();
-    ImGui::SetNextWindowPos(ImVec2(view3dX_ + view3dW_, view3dY_));
-    ImGui::SetNextWindowSize(ImVec2(imageW, view3dH_));
+    const ImGuiViewport* vp = ImGui::GetMainViewport();
+    const float maxW = std::max(vp->Size.x - 600.f, 240.f);
+    imagePanelPreferredW_ = std::clamp(imagePanelPreferredW_, 240.f, maxW);
+    const float imageW = imagePanelPreferredW_;
+    const float panelX = vp->Pos.x + vp->Size.x - imageW;
+    const float panelY = view3dY_;
+    const float panelH = view3dH_;
+
+    // 左边缘分割条：吸附右端，仅左右拖拽调宽
+    constexpr float kSplitHit = 8.f;
+    ImGui::SetNextWindowPos(ImVec2(panelX - kSplitHit * 0.5f, panelY));
+    ImGui::SetNextWindowSize(ImVec2(kSplitHit, panelH));
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0.f, 0.f));
+    ImGui::PushStyleColor(ImGuiCol_WindowBg, ImVec4(0.f, 0.f, 0.f, 0.f));
+    ImGui::Begin(u8"##2d图像分割条", nullptr,
+                 ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove |
+                     ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoSavedSettings |
+                     ImGuiWindowFlags_NoNav | ImGuiWindowFlags_NoBackground |
+                     ImGuiWindowFlags_NoBringToFrontOnFocus);
+    ImGui::InvisibleButton(u8"##split", ImVec2(kSplitHit, panelH));
+    const bool splitHover = ImGui::IsItemHovered();
+    const bool splitDrag = ImGui::IsItemActive() && ImGui::IsMouseDragging(ImGuiMouseButton_Left);
+    if (splitDrag) {
+        const float mx = ImGui::GetIO().MousePos.x;
+        imagePanelPreferredW_ = std::clamp(vp->Pos.x + vp->Size.x - mx, 240.f, maxW);
+    }
+    if (splitHover || splitDrag) {
+        ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeEW);
+    }
+    ImGui::End();
+    ImGui::PopStyleColor();
+    ImGui::PopStyleVar();
+
+    // 与左侧栏相同：贴边停靠，不可拖移，高度铺满内容区
+    ImGui::SetNextWindowPos(ImVec2(panelX, panelY));
+    ImGui::SetNextWindowSize(ImVec2(imageW, panelH));
     ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 0.f);
-    ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 1.f);
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 0.f);
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(10.f, 8.f));
     ImGui::PushStyleColor(ImGuiCol_WindowBg, ImVec4(0.08f, 0.09f, 0.10f, 1.f));
 
-    bool open = showImagePanel_;
-    if (!ImGui::Begin(u8"2D 图像", &open,
-                      ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoMove |
-                          ImGuiWindowFlags_NoResize)) {
-        ImGui::End();
-        ImGui::PopStyleColor();
-        ImGui::PopStyleVar(2);
-        showImagePanel_ = open;
-        return;
+    ImGui::Begin(u8"##2D图像停靠栏", nullptr,
+                 ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove |
+                     ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoBringToFrontOnFocus |
+                     ImGuiWindowFlags_NoScrollbar);
+
+    // 顶栏：标题 + 关闭（替代系统标题栏，保持停靠外观）
+    {
+        ImGui::TextColored(ImVec4(0.45f, 0.85f, 0.90f, 1.f), u8"2D 图像");
+        ImGui::SameLine(ImGui::GetContentRegionAvail().x - 28.f);
+        if (ImGui::SmallButton(u8"×")) {
+            showImagePanel_ = false;
+        }
+        if (ImGui::IsItemHovered()) ImGui::SetTooltip(u8"关闭面板（可在「窗口」菜单再打开）");
     }
-    showImagePanel_ = open;
+
+    // 左侧分割高亮线
+    {
+        ImDrawList* dl = ImGui::GetWindowDrawList();
+        const ImU32 col = (splitHover || splitDrag) ? IM_COL32(90, 180, 200, 220)
+                                                   : IM_COL32(50, 70, 80, 200);
+        dl->AddLine(ImVec2(panelX, panelY), ImVec2(panelX, panelY + panelH), col,
+                    (splitHover || splitDrag) ? 2.5f : 1.5f);
+    }
 
     const bool canSync = depthImage_.valid() && brightnessImage_.valid();
     if (!canSync) ImGui::BeginDisabled();
@@ -2353,12 +2480,14 @@ void Application::DrawImagePanel() {
 
     const bool both = depthImage_.valid() && brightnessImage_.valid();
     if (both && imageSyncEnabled_) {
-        const float controlsReserve = depthImage_.valid() ? 150.f : 40.f;
-        const float remain = ImGui::GetContentRegionAvail().y - controlsReserve;
-        const float each = std::max(remain * 0.5f - 8.f, 70.f);
-        DrawImageWithSyncMarker(depthImage_, u8"深度图", each);
+        const float halfH = std::max((ImGui::GetContentRegionAvail().y - 8.f) * 0.5f, 80.f);
+        ImGui::BeginChild(u8"##depthImgPane", ImVec2(0.f, halfH), ImGuiChildFlags_None);
+        DrawImageWithSyncMarker(depthImage_, u8"深度图");
+        ImGui::EndChild();
         ImGui::Spacing();
-        DrawImageWithSyncMarker(brightnessImage_, u8"亮度图", each);
+        ImGui::BeginChild(u8"##brightImgPane", ImVec2(0.f, 0.f), ImGuiChildFlags_None);
+        DrawImageWithSyncMarker(brightnessImage_, u8"亮度图");
+        ImGui::EndChild();
         DrawDepthRenderControls();
     } else {
         if (ImGui::BeginTabBar(u8"##imageTabs")) {
@@ -2379,21 +2508,16 @@ void Application::DrawImagePanel() {
 
         ImageView* view = (imagePanelTab_ == 1) ? &brightnessImage_ : &depthImage_;
         if (view->valid()) {
-            const float controlsReserve = (imagePanelTab_ == 0) ? 150.f : 40.f;
-            const float remain = ImGui::GetContentRegionAvail().y - controlsReserve;
-            DrawImageWithSyncMarker(*view, imagePanelTab_ == 0 ? u8"深度图" : u8"亮度图", remain);
+            DrawImageWithSyncMarker(*view, imagePanelTab_ == 0 ? u8"深度图" : u8"亮度图");
             if (imagePanelTab_ == 0) DrawDepthRenderControls();
         } else {
             ImGui::TextDisabled(u8"当前无图像");
         }
     }
 
-    ImGui::SetNextItemWidth(-1);
-    ImGui::SliderFloat(u8"面板宽度", &imagePanelPreferredW_, 240.f, 800.f, "%.0f");
-
     ImGui::End();
     ImGui::PopStyleColor();
-    ImGui::PopStyleVar(2);
+    ImGui::PopStyleVar(3);
 }
 
 void Application::DrawToolbar(float y, float height) {
@@ -2612,7 +2736,8 @@ void Application::DrawToolPanel() {
                 u8"左键拖拽: 旋转\n"
                 u8"中键拖拽: 平移（按住拖动）\n"
                 u8"Shift+左键: 平移\n"
-                u8"滚轮: 缩放 | 右键: 旋转");
+                u8"滚轮: 缩放 | 右键: 旋转\n"
+                u8"双击点: 设为旋转中心");
             break;
         case ToolMode::Pick:
             ImGui::TextWrapped(u8"在点附近单击，读取原始世界坐标 XYZ。");
@@ -3206,6 +3331,8 @@ void Application::DrawUi() {
 
     DrawViewAxisWidget(contentTop, contentTop + contentH, sidebarW);
     DrawImagePanel();
+    // 左边缘拖拽可能改了宽度，同帧刷新点云视区，避免差一帧
+    UpdateView3dLayout(contentTop, contentH, sidebarW);
     DrawAboutPopup();
     DrawCreatePopups();
     DrawOverlays();
@@ -3225,12 +3352,21 @@ void Application::Run() {
         if (needUpload_ && !algoEditor_.IsVisible()) RefreshGpu();
 
         glfwGetFramebufferSize(window_, &fbW_, &fbH_);
+        glDisable(GL_SCISSOR_TEST);
         glViewport(0, 0, fbW_, fbH_);
         glClearColor(0.07f, 0.08f, 0.10f, 1.f);
         glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
 
         if (!algoEditor_.IsVisible()) {
-            renderer_.Draw(camera_, fbW_, fbH_, pointSize_, opacity_);
+            int vx = 0, vy = 0, vw = 0, vh = 0;
+            GetView3dGlViewport(vx, vy, vw, vh);
+            glViewport(vx, vy, vw, vh);
+            glEnable(GL_SCISSOR_TEST);
+            glScissor(vx, vy, vw, vh);
+            glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+            renderer_.Draw(camera_, vw, vh, pointSize_, opacity_);
+            glDisable(GL_SCISSOR_TEST);
+            glViewport(0, 0, fbW_, fbH_);
         }
 
         ImGui::Render();

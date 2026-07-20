@@ -2,10 +2,15 @@
 
 #include "core/PointCloud.h"
 #include "render/Camera.h"
+#include "tools/MeasureTools.h"
 
 #include <functional>
+#include <optional>
 #include <string>
 #include <vector>
+
+struct ImDrawList;
+struct ImVec2;
 
 struct AlgoHost {
     const PointCloud* currentCloud = nullptr;
@@ -97,6 +102,12 @@ private:
         bool roiEdited = false;  // ROI 模块交互编辑过
         std::string runMsg;
         bool runOk = false;
+        // 拟合 / 测量结果（供预览叠加与输出节点展示）
+        std::optional<PlaneModel> plane;
+        std::optional<FlatnessResult> flatness;
+        std::optional<SphereModel> sphere;
+        std::optional<CircleModel> circle;
+        std::optional<CylinderModel> cylinder;
     };
 
     struct Link {
@@ -136,6 +147,10 @@ private:
     void FitRoiCamera(const PointCloud& cloud);
     void ConnectNodes(int fromId, int toId);
     void DisconnectIncoming(int toId);
+    void ClearNodeResults(Node& n);
+    void DrawPlaneOverlay(ImDrawList* dl, const PlaneModel& plane, const Mat4& mvp,
+                          const ImVec2& plotPos, const ImVec2& plotSize);
+    void DrawOutputResultPanel(Node& n);
     Node* FindUpstream(int nodeId);
     bool BuildExecOrder(std::vector<int>& outOrder, std::string& error) const;
     void GetPortScreenPos(const Node& n, bool output, float& sx, float& sy) const;

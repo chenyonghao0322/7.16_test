@@ -10,6 +10,10 @@ void Camera::SetTarget(const Vec3& target, float distance) {
     initialDistance_ = distance_;
 }
 
+void Camera::SetOrbitTarget(const Vec3& target) {
+    target_ = target;
+}
+
 void Camera::Orbit(float dx, float dy) {
     yaw_ += dx;
     pitch_ = std::clamp(pitch_ + dy, -1.55f, 1.55f);

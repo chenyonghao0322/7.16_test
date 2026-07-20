@@ -15,93 +15,21 @@
 
 namespace {
 
-// 正交折线：先竖直出一段，再拐弯，最后竖直进入顶部端口（拐角小圆角）
+// 三次贝塞尔弧线连接（输出端口 → 输入端口）
 void DrawSmoothLink(ImDrawList* dl, float ax, float ay, float bx, float by, ImU32 col,
                     float thickness, float scale = 1.f) {
     scale = std::max(0.35f, scale);
     const float dx = bx - ax;
     const float dy = by - ay;
-
-    // 近似共线：直接连
-    if (std::fabs(dx) < 3.f * scale) {
-        dl->AddLine(ImVec2(ax, ay), ImVec2(bx, by), col, thickness);
-        return;
-    }
-
-    const float stub = 28.f * scale;  // 先出来一段
-    const float yOut = ay + stub;     // 底部端口先向下
-    const float yIn = by - stub;      // 顶部端口前留一段竖直
-
-    // 水平通道 Y：保证在两段 stub 之外，避免一出来就拐
-    float yLane = yOut;
-    if (yIn > yOut + 4.f * scale) {
-        yLane = 0.5f * (yOut + yIn);  // 中间水平段
-    } else {
-        // 目标较近或在上方：向下探一段再绕
-        yLane = std::max(yOut, by + stub);
-    }
-
-    const float sx = (dx >= 0.f) ? 1.f : -1.f;
-    auto cornerR = [&](float segA, float segB) {
-        float r = std::min(10.f * scale, std::min(std::fabs(segA), std::fabs(segB)) * 0.45f);
-        return std::max(3.f * scale, r);
-    };
-
-    constexpr float kPi = 3.14159265f;
-    auto arc = [&](float cx, float cy, float r, float a0, float a1) {
-        constexpr int N = 8;
-        for (int i = 1; i <= N; ++i) {
-            const float t = static_cast<float>(i) / static_cast<float>(N);
-            const float a = a0 + (a1 - a0) * t;
-            dl->PathLineTo(ImVec2(cx + std::cos(a) * r, cy + std::sin(a) * r));
-        }
-    };
-
-    const float r1 = cornerR(yLane - ay, std::fabs(dx));
-    const float r2 = cornerR(std::fabs(by - yLane), std::fabs(dx));
-
-    dl->PathClear();
-    dl->PathLineTo(ImVec2(ax, ay));
-    // 竖直出来，到第一个拐角前
-    dl->PathLineTo(ImVec2(ax, yLane - r1));
-
-    // 拐角1：下→水平（朝 bx）
-    {
-        const float cx = ax + sx * r1;
-        const float cy = yLane - r1;
-        const float a0 = (sx > 0.f) ? kPi : 0.f;           // 从下方来：相对中心在 ( -sx*r? )
-        // 中心在 (ax + sx*r1, yLane - r1)：起点 (ax, yLane-r1) 相对 = (-sx*r1, 0)
-        // 终点 (ax + sx*r1, yLane) 相对 = (0, r1)
-        const float aStart = (sx > 0.f) ? kPi : 0.f;
-        const float aEnd = kPi * 0.5f;
-        arc(cx, cy, r1, aStart, aEnd);
-    }
-
-    // 水平段到第二个拐角前
-    dl->PathLineTo(ImVec2(bx - sx * r2, yLane));
-
-    // 拐角2：水平→竖直进入
-    {
-        const float cx = bx - sx * r2;
-        const float cy = yLane + (by >= yLane ? r2 : -r2);
-        if (by >= yLane) {
-            // 继续向下进：中心 (bx - sx*r2, yLane + r2)
-            // 起点 (bx - sx*r2, yLane) 相对 (0, -r2) → a = -π/2
-            // 终点 (bx, yLane + r2) 相对 (sx*r2, 0) → a = 0 or π
-            const float aStart = -kPi * 0.5f;
-            const float aEnd = (sx > 0.f) ? 0.f : -kPi;
-            arc(cx, cy, r2, aStart, aEnd);
-        } else {
-            // 折回向上进顶端口
-            const float aStart = kPi * 0.5f;
-            const float aEnd = (sx > 0.f) ? 0.f : kPi;
-            arc(cx, cy, r2, aStart, aEnd);
-        }
-    }
-
-    dl->PathLineTo(ImVec2(bx, by));
-    dl->PathStroke(col, 0, thickness);
-    (void)dy;
+    float bend = std::max(40.f * scale, std::fabs(dy) * 0.45f);
+    bend = std::min(bend, 180.f * scale);
+    // 端口朝下出、朝上入：控制点沿竖直方向拉开
+    const ImVec2 p0(ax, ay);
+    const ImVec2 p1(ax, ay + bend);
+    const ImVec2 p2(bx, by - bend);
+    const ImVec2 p3(bx, by);
+    dl->AddBezierCubic(p0, p1, p2, p3, col, thickness, 0);
+    (void)dx;
 }
 
 }  // namespace
@@ -383,6 +311,7 @@ void AlgorithmEditor::ResetNode(int nodeId) {
     Node* n = FindNode(nodeId);
     if (!n) return;
     selectedId_ = nodeId;
+    ClearNodeResults(*n);
     n->cloud.Clear();
     n->hasCloud = false;
     n->roiEdited = false;
@@ -393,6 +322,14 @@ void AlgorithmEditor::ResetNode(int nodeId) {
     if (roiEditNodeId_ == nodeId) roiEditOpen_ = false;
     runStatus_ = std::string(n->title) + u8"：已重置参数与结果";
     runStatusOk_ = true;
+}
+
+void AlgorithmEditor::ClearNodeResults(Node& n) {
+    n.plane.reset();
+    n.flatness.reset();
+    n.sphere.reset();
+    n.circle.reset();
+    n.cylinder.reset();
 }
 
 int AlgorithmEditor::HitTestOutPort(float mx, float my) const {
@@ -769,6 +706,9 @@ bool AlgorithmEditor::ExecuteNode(Node& node, PointCloud& working, std::string& 
             PlaneModel plane;
             std::vector<std::size_t> empty;
             if (!MeasureTools::FitPlaneSVD(working, empty, plane, error)) return false;
+            if (p.flipNormalUp && plane.normal.z < 0.f) {
+                plane.normal = plane.normal * -1.f;
+            }
             if (plane.rms > p.maxRms) {
                 char buf[128];
                 std::snprintf(buf, sizeof(buf), u8"RMS=%.4f 超过阈值 %.4f", plane.rms, p.maxRms);
@@ -776,9 +716,13 @@ bool AlgorithmEditor::ExecuteNode(Node& node, PointCloud& working, std::string& 
                 return false;
             }
             storeWorking();
-            char buf[128];
-            std::snprintf(buf, sizeof(buf), u8"平面 RMS=%.4f N=(%.2f,%.2f,%.2f)", plane.rms,
-                          plane.normal.x, plane.normal.y, plane.normal.z);
+            ClearNodeResults(node);
+            node.plane = plane;
+            const float d = -plane.normal.Dot(plane.centroid);
+            char buf[192];
+            std::snprintf(buf, sizeof(buf),
+                          u8"平面 RMS=%.4f\n%.4fx%+.4fy%+.4fz%+.4f=0", plane.rms, plane.normal.x,
+                          plane.normal.y, plane.normal.z, d);
             node.runMsg = buf;
             node.runOk = true;
             return true;
@@ -796,6 +740,8 @@ bool AlgorithmEditor::ExecuteNode(Node& node, PointCloud& working, std::string& 
                 return false;
             }
             storeWorking();
+            ClearNodeResults(node);
+            node.sphere = s;
             char buf[128];
             std::snprintf(buf, sizeof(buf), u8"球 R=%.4f RMS=%.4f", s.radius, s.rms);
             node.runMsg = buf;
@@ -811,6 +757,8 @@ bool AlgorithmEditor::ExecuteNode(Node& node, PointCloud& working, std::string& 
                 return false;
             }
             storeWorking();
+            ClearNodeResults(node);
+            node.circle = c;
             char buf[128];
             std::snprintf(buf, sizeof(buf), u8"圆 R=%.4f RMS=%.4f", c.radius, c.rms);
             node.runMsg = buf;
@@ -826,6 +774,8 @@ bool AlgorithmEditor::ExecuteNode(Node& node, PointCloud& working, std::string& 
                 return false;
             }
             storeWorking();
+            ClearNodeResults(node);
+            node.cylinder = c;
             char buf[128];
             std::snprintf(buf, sizeof(buf), u8"圆柱 R=%.4f RMS=%.4f", c.radius, c.rms);
             node.runMsg = buf;
@@ -837,8 +787,12 @@ bool AlgorithmEditor::ExecuteNode(Node& node, PointCloud& working, std::string& 
             std::vector<std::size_t> empty;
             if (!MeasureTools::ComputeFlatness(working, empty, fr, error)) return false;
             storeWorking();
-            char buf[128];
-            std::snprintf(buf, sizeof(buf), u8"平面度 PV=%.4f RMS=%.4f", fr.peakToValley, fr.rms);
+            ClearNodeResults(node);
+            node.flatness = fr;
+            node.plane = fr.plane;
+            char buf[160];
+            std::snprintf(buf, sizeof(buf), u8"平面度 PV=%.4f RMS=%.4f  偏差[%.4f,%.4f]",
+                          fr.peakToValley, fr.rms, fr.minDev, fr.maxDev);
             node.runMsg = buf;
             node.runOk = true;
             return true;
@@ -866,14 +820,62 @@ bool AlgorithmEditor::ExecuteNode(Node& node, PointCloud& working, std::string& 
                 return false;
             }
             storeWorking();
-            char buf[128];
-            std::snprintf(buf, sizeof(buf), u8"输出 %zu 点（可见 %zu）", working.points.size(),
-                          working.VisibleCount());
-            node.runMsg = buf;
+            ClearNodeResults(node);
+            // 从上游链收集最近一次拟合/测量结果，复制到本节点供右侧结果栏展示
+            Node* up = FindUpstream(node.id);
+            int hops = 0;
+            while (up && hops < 64) {
+                if (up->flatness) {
+                    node.flatness = up->flatness;
+                    node.plane = up->flatness->plane;
+                    break;
+                }
+                if (up->plane) {
+                    node.plane = up->plane;
+                    break;
+                }
+                if (up->sphere) {
+                    node.sphere = up->sphere;
+                    break;
+                }
+                if (up->circle) {
+                    node.circle = up->circle;
+                    break;
+                }
+                if (up->cylinder) {
+                    node.cylinder = up->cylinder;
+                    break;
+                }
+                up = FindUpstream(up->id);
+                ++hops;
+            }
+
+            std::string summary = u8"输出 ";
+            summary += std::to_string(working.points.size()) + u8" 点（可见 ";
+            summary += std::to_string(working.VisibleCount()) + u8"）";
+            if (node.flatness) {
+                char buf[128];
+                std::snprintf(buf, sizeof(buf), u8"\n平面度 PV=%.6f  RMS=%.6f",
+                              node.flatness->peakToValley, node.flatness->rms);
+                summary += buf;
+                if (node.params.outputOkNg) {
+                    const float v = node.flatness->peakToValley;
+                    const bool ok = v >= node.params.tolLower && v <= node.params.tolUpper;
+                    summary += ok ? u8"  → OK" : u8"  → NG";
+                }
+            } else if (node.plane) {
+                const float d = -node.plane->normal.Dot(node.plane->centroid);
+                char buf[160];
+                std::snprintf(buf, sizeof(buf), u8"\n平面方程 %.6fx%+.6fy%+.6fz%+.6f=0\nRMS=%.6f",
+                              node.plane->normal.x, node.plane->normal.y, node.plane->normal.z, d,
+                              node.plane->rms);
+                summary += buf;
+            }
+            node.runMsg = summary;
             node.runOk = true;
             if (host_.publishCloud) {
                 PointCloud pub = working;
-                host_.publishCloud(std::move(pub), buf);
+                host_.publishCloud(std::move(pub), summary.c_str());
             }
             return true;
         }
@@ -905,6 +907,7 @@ void AlgorithmEditor::RunGraph() {
         n.cloud.Clear();
         n.runMsg.clear();
         n.runOk = false;
+        ClearNodeResults(n);
     }
 
     PointCloud lastCloud;
@@ -1483,9 +1486,87 @@ void AlgorithmEditor::DrawCloudPreviewWindow() {
         for (const Pix& q : pix) {
             dl->AddRectFilled(ImVec2(q.x - 1.2f, q.y - 1.2f), ImVec2(q.x + 1.2f, q.y + 1.2f), q.col);
         }
+
+        // 拟合平面叠加（模块预览）
+        if (n->params.showOverlay && n->plane) {
+            DrawPlaneOverlay(dl, *n->plane, mvp, plotPos, plotSize);
+        }
     }
 
     ImGui::End();
+}
+
+void AlgorithmEditor::DrawPlaneOverlay(ImDrawList* dl, const PlaneModel& plane, const Mat4& mvp,
+                                       const ImVec2& plotPos, const ImVec2& plotSize) {
+    Vec3 n = plane.normal.Normalized();
+    Vec3 tmp = (std::fabs(n.x) < 0.9f) ? Vec3{1, 0, 0} : Vec3{0, 1, 0};
+    Vec3 u = n.Cross(tmp).Normalized();
+    Vec3 v = n.Cross(u).Normalized();
+    const float su = std::max(plane.halfExtentU > 0.f ? plane.halfExtentU : plane.halfSize, 0.01f);
+    const float sv = std::max(plane.halfExtentV > 0.f ? plane.halfExtentV : plane.halfSize, 0.01f);
+
+    auto project = [&](const Vec3& p, ImVec2& out) -> bool {
+        const Vec4 clip = mvp.MulVec4({p.x, p.y, p.z, 1.f});
+        if (std::fabs(clip.w) < 1e-12f) return false;
+        const float ndcX = clip.x / clip.w;
+        const float ndcY = clip.y / clip.w;
+        const float ndcZ = clip.z / clip.w;
+        if (ndcZ < -1.f || ndcZ > 1.f) return false;
+        out.x = plotPos.x + (ndcX * 0.5f + 0.5f) * plotSize.x;
+        out.y = plotPos.y + (1.f - (ndcY * 0.5f + 0.5f)) * plotSize.y;
+        return true;
+    };
+
+    const Vec3 corners[4] = {
+        plane.centroid + u * (-su) + v * (-sv),
+        plane.centroid + u * (su) + v * (-sv),
+        plane.centroid + u * (su) + v * (sv),
+        plane.centroid + u * (-su) + v * (sv),
+    };
+    ImVec2 sc[4];
+    bool ok[4] = {};
+    int okCount = 0;
+    for (int i = 0; i < 4; ++i) {
+        ok[i] = project(corners[i], sc[i]);
+        if (ok[i]) ++okCount;
+    }
+    if (okCount < 3) return;
+
+    const ImU32 fill = IM_COL32(255, 120, 40, 55);
+    const ImU32 edge = IM_COL32(255, 170, 70, 230);
+    // 填充四边形（若四点都可见）
+    if (ok[0] && ok[1] && ok[2] && ok[3]) {
+        dl->AddQuadFilled(sc[0], sc[1], sc[2], sc[3], fill);
+        dl->AddQuad(sc[0], sc[1], sc[2], sc[3], edge, 2.f);
+    } else {
+        for (int i = 0; i < 4; ++i) {
+            const int j = (i + 1) % 4;
+            if (ok[i] && ok[j]) dl->AddLine(sc[i], sc[j], edge, 2.f);
+        }
+    }
+
+    // 网格线
+    constexpr int kDiv = 4;
+    for (int i = 1; i < kDiv; ++i) {
+        const float t = -1.f + 2.f * static_cast<float>(i) / static_cast<float>(kDiv);
+        ImVec2 a, b;
+        if (project(plane.centroid + u * (t * su) + v * (-sv), a) &&
+            project(plane.centroid + u * (t * su) + v * (sv), b)) {
+            dl->AddLine(a, b, IM_COL32(255, 160, 60, 140), 1.f);
+        }
+        if (project(plane.centroid + u * (-su) + v * (t * sv), a) &&
+            project(plane.centroid + u * (su) + v * (t * sv), b)) {
+            dl->AddLine(a, b, IM_COL32(255, 160, 60, 140), 1.f);
+        }
+    }
+
+    // 法向箭头
+    ImVec2 c0, c1;
+    const Vec3 tip = plane.centroid + n * (std::max(su, sv) * 0.35f);
+    if (project(plane.centroid, c0) && project(tip, c1)) {
+        dl->AddLine(c0, c1, IM_COL32(80, 200, 255, 255), 2.5f);
+        dl->AddCircleFilled(c1, 4.f, IM_COL32(80, 200, 255, 255));
+    }
 }
 
 void AlgorithmEditor::DrawRoiEditWindow() {
@@ -1788,6 +1869,20 @@ void AlgorithmEditor::DrawProperties() {
             ImGui::TextUnformatted(u8"最大允许 RMS");
             ImGui::DragFloat(u8"##rms", &p.maxRms, 0.001f, 0.f, 1e3f, "%.4f");
             ImGui::Checkbox(u8"显示拟合面叠加", &p.showOverlay);
+            if (n->plane) {
+                ImGui::Separator();
+                ImGui::TextDisabled(u8"拟合结果");
+                const PlaneModel& pl = *n->plane;
+                const float d = -pl.normal.Dot(pl.centroid);
+                ImGui::TextWrapped(u8"方程\n%.6fx %+.6fy %+.6fz %+.6f = 0", pl.normal.x, pl.normal.y,
+                                   pl.normal.z, d);
+                ImGui::Text(u8"法向  (%.4f, %.4f, %.4f)", pl.normal.x, pl.normal.y, pl.normal.z);
+                ImGui::Text(u8"中心  (%.4f, %.4f, %.4f)", pl.centroid.x, pl.centroid.y,
+                            pl.centroid.z);
+                ImGui::Text(u8"RMS = %.6f   点数 %d", pl.rms, pl.pointCount);
+                ImGui::Text(u8"半宽 U=%.3f  V=%.3f", pl.halfExtentU, pl.halfExtentV);
+                if (ImGui::Button(u8"预览拟合平面", ImVec2(-1.f, 0))) OpenCloudPreview(n->id);
+            }
             break;
         case ModuleType::FitSphere:
         case ModuleType::FitCircle:
@@ -1810,6 +1905,20 @@ void AlgorithmEditor::DrawProperties() {
             ImGui::TextUnformatted(u8"最大允许 RMS");
             ImGui::DragFloat(u8"##rms", &p.maxRms, 0.001f, 0.f, 1e3f, "%.4f");
             ImGui::Checkbox(u8"显示偏差着色", &p.showOverlay);
+            if (n->flatness && n->flatness->valid) {
+                ImGui::Separator();
+                ImGui::TextDisabled(u8"平面度结果");
+                const FlatnessResult& fr = *n->flatness;
+                ImGui::Text(u8"PV (峰谷) = %.6f", fr.peakToValley);
+                ImGui::Text(u8"RMS       = %.6f", fr.rms);
+                ImGui::Text(u8"平均|偏差| = %.6f", fr.meanAbs);
+                ImGui::Text(u8"偏差范围  [%.6f, %.6f]", fr.minDev, fr.maxDev);
+                if (n->plane) {
+                    const float d = -n->plane->normal.Dot(n->plane->centroid);
+                    ImGui::TextWrapped(u8"基准面 %.4fx%+.4fy%+.4fz%+.4f=0", n->plane->normal.x,
+                                       n->plane->normal.y, n->plane->normal.z, d);
+                }
+            }
             break;
         case ModuleType::StepGap:
             ImGui::Checkbox(u8"使用 Z 高度差 ΔZ", &p.useZHeight);
@@ -1844,8 +1953,10 @@ void AlgorithmEditor::DrawProperties() {
                 ImGui::DragFloat(u8"##lo", &p.tolLower, 0.001f, -1e6f, 1e6f, "%.4f");
                 ImGui::TextUnformatted(u8"公差上限");
                 ImGui::DragFloat(u8"##hi", &p.tolUpper, 0.001f, -1e6f, 1e6f, "%.4f");
+                ImGui::TextDisabled(u8"平面度以 PV 判定；其它量可后续扩展");
             }
-            ImGui::TextDisabled(u8"运行后点云会同步到主视图");
+            ImGui::Separator();
+            DrawOutputResultPanel(*n);
             break;
         }
         default:
@@ -1871,4 +1982,71 @@ void AlgorithmEditor::DrawProperties() {
         draggingNode_ = false;
         dragNodeId_ = -1;
     }
+}
+
+void AlgorithmEditor::DrawOutputResultPanel(Node& n) {
+    ImGui::TextColored(ImVec4(0.45f, 0.85f, 0.90f, 1.f), u8"结果栏");
+    if (!n.runOk && !n.hasCloud) {
+        ImGui::TextWrapped(u8"运行本模块后，这里会显示上游拟合/测量的输出数据。");
+        return;
+    }
+
+    if (n.hasCloud) {
+        ImGui::Text(u8"点云  总数 %zu　可见 %zu", n.cloud.points.size(), n.cloud.VisibleCount());
+    }
+
+    if (n.flatness && n.flatness->valid) {
+        const FlatnessResult& fr = *n.flatness;
+        ImGui::Spacing();
+        ImGui::TextDisabled(u8"平面度");
+        ImGui::Text(u8"PV (峰谷)   = %.6f", fr.peakToValley);
+        ImGui::Text(u8"RMS         = %.6f", fr.rms);
+        ImGui::Text(u8"平均|偏差|  = %.6f", fr.meanAbs);
+        ImGui::Text(u8"最小偏差    = %.6f", fr.minDev);
+        ImGui::Text(u8"最大偏差    = %.6f", fr.maxDev);
+        if (n.params.outputOkNg) {
+            const bool ok =
+                fr.peakToValley >= n.params.tolLower && fr.peakToValley <= n.params.tolUpper;
+            ImGui::TextColored(ok ? ImVec4(0.4f, 0.9f, 0.5f, 1.f) : ImVec4(0.95f, 0.4f, 0.35f, 1.f),
+                               ok ? u8"判定：OK" : u8"判定：NG");
+        }
+    }
+
+    if (n.plane) {
+        const PlaneModel& pl = *n.plane;
+        const float d = -pl.normal.Dot(pl.centroid);
+        ImGui::Spacing();
+        ImGui::TextDisabled(u8"拟合平面");
+        ImGui::TextWrapped(u8"%.6fx\n%+.6fy\n%+.6fz\n%+.6f = 0", pl.normal.x, pl.normal.y,
+                           pl.normal.z, d);
+        ImGui::Text(u8"法向 N = (%.6f, %.6f, %.6f)", pl.normal.x, pl.normal.y, pl.normal.z);
+        ImGui::Text(u8"中心 C = (%.6f, %.6f, %.6f)", pl.centroid.x, pl.centroid.y, pl.centroid.z);
+        ImGui::Text(u8"RMS = %.6f", pl.rms);
+        ImGui::Text(u8"点数 = %d", pl.pointCount);
+    }
+
+    if (n.sphere) {
+        ImGui::Spacing();
+        ImGui::TextDisabled(u8"拟合球");
+        ImGui::Text(u8"中心 (%.4f, %.4f, %.4f)", n.sphere->center.x, n.sphere->center.y,
+                    n.sphere->center.z);
+        ImGui::Text(u8"半径 %.6f   RMS %.6f", n.sphere->radius, n.sphere->rms);
+    }
+    if (n.circle) {
+        ImGui::Spacing();
+        ImGui::TextDisabled(u8"拟合圆");
+        ImGui::Text(u8"中心 (%.4f, %.4f, %.4f)", n.circle->center.x, n.circle->center.y,
+                    n.circle->center.z);
+        ImGui::Text(u8"半径 %.6f   RMS %.6f", n.circle->radius, n.circle->rms);
+    }
+    if (n.cylinder) {
+        ImGui::Spacing();
+        ImGui::TextDisabled(u8"拟合圆柱");
+        ImGui::Text(u8"半径 %.6f   RMS %.6f", n.cylinder->radius, n.cylinder->rms);
+    }
+
+    if (!n.plane && !n.flatness && !n.sphere && !n.circle && !n.cylinder) {
+        ImGui::TextDisabled(u8"上游暂无拟合/测量数值结果（可先接平面拟合或平面度）");
+    }
+    ImGui::TextDisabled(u8"运行后点云会同步到主视图");
 }
